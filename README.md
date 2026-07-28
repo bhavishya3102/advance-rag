@@ -1,14 +1,18 @@
-# Advance RAG — PDF Q&A with Qdrant, BullMQ & OpenAI
+# Reading Room — Advanced RAG over your own documents
 
-An **Advanced RAG (Retrieval Augmented Generation)** pipeline in Node.js.
+An **Advanced RAG (Retrieval Augmented Generation)** pipeline in Node.js, with a React UI.
 
-Upload a PDF → it gets parsed, chunked, embedded and stored in a vector DB (asynchronously, via a queue).
-Ask a question → the query is expanded into multiple variants (rewriting, step-back, HyDE, sub-queries),
-each variant searches the vector DB, the ranked lists are fused with **Reciprocal Rank Fusion**, and the
-top chunks are handed to the LLM to write a grounded answer.
+Add a PDF or Markdown file → it gets parsed, chunked, embedded and stored in a vector DB
+(asynchronously, via a queue). Ask a question → the query is expanded into six variants (rewriting,
+step-back, HyDE, sub-queries), each searches the vector DB, the ranked lists are fused with
+**Reciprocal Rank Fusion**, and the top chunks are handed to the LLM to write a grounded answer.
 
-Nothing blocks the HTTP request: heavy work (PDF parsing, embeddings, LLM calls) runs in a **separate
+Nothing blocks the HTTP request: heavy work (parsing, embeddings, LLM calls) runs in a **separate
 worker process**, so the API stays fast and jobs can retry on failure.
+
+The UI doesn't hide any of that. Every answer carries a **retrieval trace** — the six query variants
+that were searched, which variant found which chunk, and the fused rank score that decided the
+order.
 
 > 📘 **[PIPELINE-EXAMPLE.md](PIPELINE-EXAMPLE.md)** — one real question traced through every stage,
 > with the actual query variants, per-variant rankings, RRF arithmetic and timings from a live run.
@@ -36,13 +40,19 @@ worker process**, so the API stays fast and jobs can retry on failure.
 
 ## Architecture
 
-Three processes + two containers:
-
 ```
                         ┌──────────────────────────────┐
-   POST /index (PDF) ──►│                              │
-   POST /query        ──►│   Express API  (src/index.js)│
-   GET  /query/:id    ──►│      port 8000               │
+                        │   React UI  (web/)            │
+                        │   Vite dev :5173, or built    │
+                        │   and served by Express       │
+                        └───────────┬──────────────────┘
+                                    │ /api/*
+                                    ▼
+                        ┌──────────────────────────────┐
+   POST /api/index    ──►│                              │
+   POST /api/query    ──►│   Express API  (src/index.js)│
+   GET  /api/query/:id──►│      port 8000               │
+   GET  /api/sources  ──►│                              │
                         └───────────┬──────────────────┘
                                     │ add job
                                     ▼
@@ -75,32 +85,38 @@ exponential backoff.
 
 ## The two flows
 
-### 1. Indexing flow (PDF → vectors)
+### 1. Indexing flow (document → vectors)
 
 ```
-POST /index  (multipart form-data, field: file)
+POST /api/index  (multipart form-data, field: file)
       │
-      ├─ multer: validate mimetype = application/pdf, max 25 MB
-      ├─ save to  uploads/<timestamp>-<uuid>.pdf
-      ├─ enqueueIndexingJob({ filePath, originalName, ... })   → queue "file-indexing"
-      └─ respond 202 { jobId, file }                            ← request ends here
+      ├─ multer: validate extension (.pdf .md .markdown .txt), max 25 MB
+      ├─ save to  uploads/<timestamp>-<uuid><ext>
+      ├─ enqueueIndexingJob({ docId, filePath, originalName, size })  → queue "file-indexing"
+      └─ respond 202 { jobId, docId, file }                     ← request ends here
                     │
                     ▼  (worker process picks the job up)
-      indexPdf()  in src/indexer.js
+      indexDocument()  in src/indexer.js
       │
       ├─ 1. ensureCollection()      create Qdrant collection if missing
       │                             (vector size = EMBEDDING_DIMENSIONS, distance = Cosine)
-      ├─ 2. readPdfText()           pdf-parse → raw text
+      │                             + payload index on docId, for filtered delete
+      ├─ 2. readDocumentText()      .pdf → pdf-parse · .md/.txt → read as UTF-8
       ├─ 3. chunkText()             collapse whitespace, slice into ~1000-char chunks
       │                             with 200-char overlap, cutting on word boundaries
       ├─ 4. embedTexts(chunks)      OpenAI embeddings, batched 100 at a time
-      ├─ 5. build points            { id: uuid, vector, payload: { text, source,
-      │                               filePath, chunkIndex } }
+      ├─ 5. build points            { id: uuid, vector, payload: { text, source, docId,
+      │                               kind, filePath, chunkIndex, indexedAt } }
       └─ 6. qdrant.upsert()         wait: true → written & searchable
-      →  returns { chunks: N, collection }
+      →  returns { chunks: N, collection, kind, indexedAt }
 ```
 
-Job options: `attempts: 3`, exponential backoff starting at 2s.
+Job options: `attempts: 3`, exponential backoff starting at 2s. A file that can never succeed —
+unsupported type, or no extractable text — throws `UnprocessableDocumentError`, which the worker
+converts to a BullMQ `UnrecoverableError` so it fails immediately instead of retrying three times.
+
+Every chunk of a document shares one `docId`, so `DELETE /api/sources/:docId` removes the whole
+document with a single filtered delete even if two uploads share a filename.
 
 **Why overlap?** A chunk boundary can cut a sentence in half and destroy its meaning. A 200-char
 overlap means every sentence appears whole in at least one chunk.
@@ -108,12 +124,12 @@ overlap means every sentence appears whole in at least one chunk.
 ### 2. Query flow (question → answer)
 
 ```
-POST /query  { "query": "..." }
+POST /api/query  { "query": "..." }
       │
       ├─ enqueueQueryJob({ query })   → queue "query"
-      └─ respond 202 { jobId, poll: "/query/<id>" }   ← request ends here
+      └─ respond 202 { jobId, poll: "/api/query/<id>" }   ← request ends here
 
-GET /query/:id   → { status: "waiting" | "active" | "completed" | "failed", result? }
+GET /api/query/:id → { status: "waiting" | "active" | "completed" | "failed", result? }
                     (poll this until status === "completed")
                     │
                     ▼  (worker process)
@@ -199,61 +215,96 @@ found it — very handy for debugging retrieval quality.
 ## Setup
 
 ```bash
-# 1. install node dependencies   (already done ✅)
+# 1. backend dependencies
 npm install
 
-# 2. create your env file
+# 2. frontend dependencies
+npm run ui:install           # npm --prefix web install
+
+# 3. create your env file
 cp .env.example .env
 
-# 3. put your real key in .env
+# 4. put your real key in .env
 #    OPENAI_API_KEY=sk-...
 ```
 
-`.env` and `uploads/` are git-ignored — the key never gets committed.
+`.env`, `uploads/` and `web/dist/` are git-ignored — the key never gets committed.
 
 ---
 
 ## Running the project
 
-You need **three things running**, in this order:
+### Development (hot reload)
+
+Four terminals:
 
 ```bash
-# ── Terminal 1: infrastructure (Qdrant) ──
+# ── 1: infrastructure (Qdrant) ──
 npm run services:up          # docker compose up -d
 # Qdrant dashboard: http://localhost:6333/dashboard
 # Redis is already running as a system service — nothing to start.
 
-# ── Terminal 2: API server ──
+# ── 2: API server ──
 npm run dev                  # node --watch src/index.js
-# 🚀 Server listening on http://localhost:8000
+# 🚀 API listening on http://localhost:8000
 
-# ── Terminal 3: worker ──
-npm run worker               # node src/worker.js
+# ── 3: worker ──  (the pipeline actually runs HERE)
+npm run worker
 # 👷 Workers started (indexing + query). Waiting for jobs...
+
+# ── 4: UI ──
+npm run ui                   # vite dev server
+# ➜  http://localhost:5173
 ```
 
+Open **http://localhost:5173**. Vite proxies `/api` to port 8000, so the browser only ever talks to
+one origin and CORS never comes up.
+
+### Production-ish (one server)
+
+```bash
+npm run ui:build             # emits web/dist
+npm start                    # Express serves the built UI *and* the API
+npm run worker               # in another terminal
+```
+
+Open **http://localhost:8000**. Express serves `web/dist` when it exists, with an SPA fallback for
+any non-`/api` route.
+
 Stop the containers with `npm run services:down`.
+
+### Using the UI
+
+- **Add a source** — drag files onto the left rail, or click it to browse. PDF, Markdown and plain
+  text, up to 25 MB. You'll see upload progress, then an indeterminate bar while the worker chunks
+  and embeds it. Failures stay on screen with the reason.
+- **Ask** — `Enter` sends, `Shift`+`Enter` adds a newline. `Stop` cancels an in-flight question.
+- **Retrieval trace** — under every answer. Expand it to see all six query variants that were
+  searched, and for each retrieved chunk its RRF score, raw cosine score, and the `matchedBy` chips
+  showing which variants found it.
+- **Remove a source** — hover an entry in the rail and confirm. This deletes its chunks from Qdrant
+  and the uploaded file from disk.
 
 ### End-to-end smoke test
 
 ```bash
 # health
-curl http://localhost:8000/health
+curl http://localhost:8000/api/health
 # → {"status":"ok"}
 
 # 1. index a PDF
-curl -F "file=@/path/to/your.pdf" http://localhost:8000/index
+curl -F "file=@/path/to/your.pdf" http://localhost:8000/api/index
 # → {"message":"File uploaded and queued for indexing","jobId":"1", ...}
 #   watch Terminal 3:  📥 Indexing job 1 → 42 chunk(s) indexed  ✅
 
 # 2. ask a question
-curl -X POST http://localhost:8000/query \
+curl -X POST http://localhost:8000/api/query \
      -H "Content-Type: application/json" \
      -d '{"query":"What is this document about?"}'
-# → {"jobId":"1","poll":"/query/1"}
+# → {"jobId":"1","poll":"/api/query/1"}
 
 # 3. poll for the answer
-curl http://localhost:8000/query/1
+curl http://localhost:8000/api/query/1
 # → {"status":"completed","result":{"answer":"...","sources":[...]}}
 ```
 
@@ -261,35 +312,75 @@ curl http://localhost:8000/query/1
 
 ## API reference
 
-### `GET /health`
+### `GET /api/health`
 ```json
 { "status": "ok" }
 ```
 
-### `POST /index`
-`multipart/form-data`, field name **`file`**. PDF only, max 25 MB.
+### `GET /api/config`
+Upload constraints, so the UI and the server can never disagree about them.
+```json
+{ "maxBytes": 26214400, "extensions": [".pdf", ".md", ".markdown", ".txt"] }
+```
+
+### `POST /api/index`
+`multipart/form-data`, field name **`file`**. `.pdf` `.md` `.markdown` `.txt`, max 25 MB, one file
+per request.
 
 **202 Accepted**
 ```json
 {
-  "message": "File uploaded and queued for indexing",
   "jobId": "1",
-  "file": { "originalName": "notes.pdf", "storedAs": "1753...-uuid.pdf", "size": 184320 }
+  "docId": "e95a02f3-38b3-4695-8569-86362c2b240c",
+  "file": { "name": "notes.pdf", "size": 184320 }
 }
 ```
-**400** — no file / non-PDF / over 25 MB · **500** — could not reach Redis.
+**400** — no file / unsupported type / over 25 MB · **500** — could not reach Redis.
 
-### `POST /query`
+### `GET /api/index/:id`
+Poll an indexing job. Same shape as `GET /api/query/:id`.
+```json
+{
+  "jobId": "1",
+  "status": "completed",
+  "result": { "chunks": 42, "collection": "documents", "kind": "PDF", "indexedAt": "2026-07-28T…" }
+}
+```
+
+### `GET /api/sources`
+The document library, aggregated from the chunks in Qdrant. Newest first; `[]` if nothing is indexed.
+```json
+{
+  "sources": [
+    {
+      "docId": "e95a02f3-…",
+      "name": "notes.pdf",
+      "kind": "PDF",
+      "chunks": 42,
+      "indexedAt": "2026-07-28T10:37:16.680Z"
+    }
+  ]
+}
+```
+
+### `DELETE /api/sources/:docId`
+Removes every chunk of that document from Qdrant and deletes its uploaded file.
+```json
+{ "deleted": "e95a02f3-…" }
+```
+**404** — no such document.
+
+### `POST /api/query`
 ```json
 { "query": "How does reciprocal rank fusion work?" }
 ```
 **202 Accepted**
 ```json
-{ "message": "Query queued", "jobId": "7", "poll": "/query/7" }
+{ "message": "Query queued", "jobId": "7", "poll": "/api/query/7" }
 ```
 **400** — missing or empty `query` string.
 
-### `GET /query/:id`
+### `GET /api/query/:id`
 Poll until `status` is `completed` or `failed`.
 
 ```json
@@ -361,17 +452,34 @@ advance-rag/
 ├── docker-compose.yml    Qdrant only (6333/6334) — Redis runs natively on 6379
 ├── .env                  your secrets — git-ignored
 ├── .env.example          template to copy
-├── uploads/              PDFs saved by multer — git-ignored, created at boot
-└── src/
-    ├── config.js         reads .env, exports `config` + queue names
-    ├── index.js          Express app: /health, /index, /query, /query/:id
-    ├── queue.js          BullMQ Queue instances + enqueue helpers (retry policy)
-    ├── worker.js         two Workers: indexing (concurrency 2), query (concurrency 4)
-    ├── indexer.js        chunkText() + indexPdf() — the whole indexing pipeline
-    ├── retriever.js      queryRewriting, hydeDocument, RRF, retrieveChunks, answerQuery
-    ├── openai.js         shared OpenAI client, embedText / embedTexts (batched)
-    └── qdrant.js         Qdrant client + ensureCollection() (409-safe)
+├── uploads/              files saved by multer — git-ignored, created at boot
+├── src/                  backend
+│   ├── config.js         reads .env, exports `config` + queue names
+│   ├── index.js          Express app: /api/* routes + serves web/dist
+│   ├── queue.js          BullMQ Queue instances + enqueue helpers (retry policy)
+│   ├── worker.js         two Workers: indexing (concurrency 2), query (concurrency 4)
+│   ├── indexer.js        chunkText() + indexDocument() — the indexing pipeline
+│   ├── retriever.js      queryRewriting, hydeDocument, RRF, retrieveChunks, answerQuery
+│   ├── sources.js        document library: list/aggregate + delete by docId
+│   ├── openai.js         shared OpenAI client, embedText / embedTexts (batched)
+│   └── qdrant.js         Qdrant client + ensureCollection() (409-safe)
+└── web/                  React frontend (Vite)
+    ├── vite.config.js    dev server + /api proxy to :8000
+    └── src/
+        ├── api/client.js       fetch wrapper, upload with progress, bounded job polling
+        ├── hooks/              useSources (library) · useConversation (chat)
+        ├── lib/format.js       bytes / relative time / duration helpers
+        ├── styles/tokens.css   design tokens, reset, atmosphere, reduced-motion
+        └── components/         Header · ArchiveRail · Conversation · RetrievalTrace · Composer
 ```
+
+### A note on CSS Modules and `@keyframes`
+
+Each `*.module.css` declares the `@keyframes` it uses **locally**, and `tokens.css` deliberately
+declares none. CSS Modules rewrite `animation-name` to a module-scoped identifier, so a module
+referencing a keyframe defined in a global sheet resolves to a name that doesn't exist — the
+animation silently never runs, and anything whose resting state depends on it (an element starting
+at `opacity: 0`) stays invisible forever. Don't "DRY up" the keyframes into `tokens.css`.
 
 ---
 

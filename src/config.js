@@ -21,6 +21,12 @@ export const config = {
     chunkSize: Number(process.env.CHUNK_SIZE) || 1000,
     chunkOverlap: Number(process.env.CHUNK_OVERLAP) || 200,
   },
+  upload: {
+    maxBytes: Number(process.env.MAX_UPLOAD_BYTES) || 25 * 1024 * 1024, // 25 MB
+  },
+  query: {
+    maxChars: Number(process.env.MAX_QUERY_CHARS) || 2000,
+  },
   retrieval: {
     topK: Number(process.env.RETRIEVAL_TOP_K) || 4, // per-query candidates from Qdrant
     rrfK: Number(process.env.RRF_K) || 60, // Reciprocal Rank Fusion constant

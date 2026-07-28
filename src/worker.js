@@ -1,23 +1,32 @@
-import { Worker } from "bullmq";
+import { Worker, UnrecoverableError } from "bullmq";
 import { connection } from "./queue.js";
 import { INDEXING_QUEUE, QUERY_QUEUE } from "./config.js";
-import { indexPdf } from "./indexer.js";
+import { indexDocument, UnprocessableDocumentError } from "./indexer.js";
 import { answerQuery } from "./retriever.js";
 
 // Worker that consumes indexing jobs enqueued by the /index route and runs the
-// pipeline: parse PDF -> chunk -> embed (OpenAI) -> upsert into Qdrant.
+// pipeline: parse document -> chunk -> embed (OpenAI) -> upsert into Qdrant.
 const indexingWorker = new Worker(
   INDEXING_QUEUE,
   async (job) => {
     console.log(`📥 Indexing job ${job.id}: ${job.data.originalName}`);
 
-    const result = await indexPdf({
-      filePath: job.data.filePath,
-      originalName: job.data.originalName,
-    });
+    try {
+      const result = await indexDocument({
+        filePath: job.data.filePath,
+        originalName: job.data.originalName,
+        docId: job.data.docId,
+      });
 
-    console.log(`   → ${result.chunks} chunk(s) indexed`);
-    return result;
+      console.log(`   → ${result.chunks} chunk(s) indexed`);
+      return result;
+    } catch (err) {
+      // A bad file will never succeed — fail now instead of burning 3 attempts.
+      if (err instanceof UnprocessableDocumentError) {
+        throw new UnrecoverableError(err.message);
+      }
+      throw err;
+    }
   },
   { connection, concurrency: 2 }
 );
@@ -44,3 +53,16 @@ for (const [name, worker] of [
 }
 
 console.log("👷 Workers started (indexing + query). Waiting for jobs...");
+
+// Graceful shutdown: let in-flight jobs finish so they aren't left "active"
+// and stalled in Redis.
+let shuttingDown = false;
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n${signal} received — finishing in-flight jobs...`);
+    await Promise.all([indexingWorker.close(), queryWorker.close()]);
+    process.exit(0);
+  });
+}

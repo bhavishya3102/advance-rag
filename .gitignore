@@ -4,3 +4,9 @@ uploads/
 *.log
 .DS_Store
 /.env
+
+# frontend build output
+web/dist/
+
+# playwright-mcp scratch output
+.playwright-mcp/

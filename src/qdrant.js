@@ -27,5 +27,11 @@ export async function ensureCollection() {
     }
   }
 
+  // Needed for filtered scroll/delete by document. Creating it twice is a no-op
+  // on Qdrant's side, so this is safe to call on every index job.
+  await qdrant
+    .createPayloadIndex(name, { field_name: "docId", field_schema: "keyword", wait: true })
+    .catch(() => {});
+
   return name;
 }

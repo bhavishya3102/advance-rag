@@ -1,0 +1,132 @@
+.header {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-4);
+  padding: var(--sp-5) var(--sp-6) var(--sp-4);
+  border-bottom: 1px solid var(--rule);
+  background: linear-gradient(to bottom, rgba(20, 17, 14, 0.9), transparent);
+  animation: rise var(--slow) var(--ease-out) both;
+}
+
+.mark {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-right: auto;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+  font-weight: 500;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--amber);
+  opacity: 0.85;
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-size: var(--step-4);
+  letter-spacing: -0.015em;
+  line-height: 0.95;
+  color: var(--ink);
+}
+
+.wordmark em {
+  font-style: italic;
+  color: var(--amber-bright);
+}
+
+/* --- index meter --- */
+
+.meter {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-bottom: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: var(--step--1);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.meterText b {
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.divider {
+  margin: 0 0.5em;
+  color: var(--ink-faint);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 99px;
+  background: var(--ink-faint);
+  flex: none;
+}
+
+.dot[data-live="true"] {
+  background: var(--sage);
+  box-shadow: 0 0 0 3px rgba(127, 155, 122, 0.16);
+}
+
+/* --- drawer toggle, only on narrow screens --- */
+
+.railToggle {
+  display: none;
+  padding: var(--sp-2);
+  margin-bottom: 0.2rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: 3px;
+  transition: border-color var(--fast) var(--ease);
+}
+
+.railToggle:hover {
+  border-color: var(--amber-edge);
+}
+
+.bars {
+  display: grid;
+  gap: 3px;
+  width: 16px;
+}
+
+.bars i {
+  height: 1px;
+  background: var(--ink-soft);
+}
+
+@media (max-width: 60rem) {
+  .railToggle {
+    display: block;
+  }
+
+  .header {
+    align-items: center;
+    padding: var(--sp-4);
+  }
+
+  .wordmark {
+    font-size: var(--step-3);
+  }
+
+  .meter {
+    display: none;
+  }
+}
+
+/* Keyframes must live in this module — see the note in styles/tokens.css. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

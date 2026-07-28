@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="6" fill="#14110E" />
+  <!-- lamplight pooling on the page -->
+  <circle cx="16" cy="9" r="9" fill="#E0A33E" opacity="0.18" />
+  <!-- open book: two leaves meeting at the spine -->
+  <path
+    d="M16 11c-2.3-1.6-4.8-2.2-7.2-2.1v12.4c2.4-.1 4.9.5 7.2 2.1m0-12.4c2.3-1.6 4.8-2.2 7.2-2.1v12.4c-2.4-.1-4.9.5-7.2 2.1m0-12.4v12.4"
+    fill="none"
+    stroke="#E0A33E"
+    stroke-width="1.6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

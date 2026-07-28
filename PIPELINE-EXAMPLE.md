@@ -58,7 +58,7 @@ Note the missing punctuation and the two-part structure. Both matter later.
 ```
 
 Everything above happens **inside the worker process**, after the HTTP request has already returned
-`202 Accepted`. The client polls `GET /query/:id` for the result.
+`202 Accepted`. The client polls `GET /api/query/:id` for the result.
 
 ---
 
@@ -387,21 +387,25 @@ answer, and the final answer is grounded in the source.
 
 ## Reproducing this
 
+The quickest way is the UI — `npm run ui`, drop the file on the left rail, ask, then expand the
+**Retrieval trace** under the answer. It shows the same six variants and per-chunk scores as the
+tables above. Over HTTP:
+
 ```bash
 npm run services:up      # Qdrant on 6333 (Redis runs natively on 6379)
 npm run dev              # API   on 8000
 npm run worker           # worker — the pipeline runs HERE
 
-# index a PDF
-curl -F "file=@handbook.pdf" http://localhost:8000/index
+# index a document
+curl -F "file=@handbook.pdf" http://localhost:8000/api/index
 
 # ask, then poll
-curl -X POST http://localhost:8000/query -H "Content-Type: application/json" \
+curl -X POST http://localhost:8000/api/query -H "Content-Type: application/json" \
      -d '{"query":"why does zephyrite lose data when a node crashes and how do i fix it"}'
-curl http://localhost:8000/query/1
+curl http://localhost:8000/api/query/1
 ```
 
-The `/query/:id` response carries the pipeline's own trace: `queries` shows all six variants that
+The `/api/query/:id` response carries the pipeline's own trace: `queries` shows all six variants that
 were searched, and each source's `matchedBy` lists which variants found it — the same data the
 tables above are built from.
 

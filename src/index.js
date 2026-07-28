@@ -2,130 +2,221 @@ import express from "express";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
-import { enqueueIndexingJob, enqueueQueryJob, queryQueue } from "./queue.js";
+import { SUPPORTED_EXTENSIONS } from "./indexer.js";
+import { listSources, deleteSource } from "./sources.js";
+import {
+  enqueueIndexingJob,
+  enqueueQueryJob,
+  indexingQueue,
+  queryQueue,
+} from "./queue.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadDir = path.join(__dirname, "..", "uploads");
+const clientDist = path.join(__dirname, "..", "web", "dist");
 
 // Ensure the uploads directory exists.
 fs.mkdirSync(uploadDir, { recursive: true });
 
-// --- Multer config: store PDFs on disk with a unique name ---
+// --- Multer: store uploads on disk under a unique, non-guessable name ---
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) => {
     const unique = `${Date.now()}-${crypto.randomUUID()}`;
-    cb(null, `${unique}${path.extname(file.originalname)}`);
+    // path.extname on the *original* name only — never trust it as a path.
+    cb(null, `${unique}${path.extname(file.originalname).toLowerCase()}`);
   },
 });
 
 const upload = multer({
   storage,
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB
+  limits: { fileSize: config.upload.maxBytes, files: 1 },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype === "application/pdf") return cb(null, true);
-    cb(new Error("Only PDF files are allowed"));
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ext in SUPPORTED_EXTENSIONS) return cb(null, true);
+    cb(
+      new multer.MulterError(
+        "LIMIT_UNEXPECTED_FILE",
+        `Unsupported file type "${ext || "unknown"}". Allowed: ${Object.keys(
+          SUPPORTED_EXTENSIONS
+        ).join(", ")}`
+      )
+    );
   },
 });
 
 const app = express();
-app.use(express.json());
+app.disable("x-powered-by");
+app.use(express.json({ limit: "1mb" }));
 
-app.get("/health", (_req, res) => res.json({ status: "ok" }));
+/** Delete a temp upload we're not going to keep, without masking the real error. */
+async function discardUpload(filePath) {
+  if (!filePath) return;
+  await fsp.unlink(filePath).catch(() => {});
+}
 
-// --- POST /index : upload a PDF and enqueue an indexing job ---
-app.post("/index", upload.single("file"), async (req, res) => {
+/** Shared shape for polling an indexing or query job. */
+async function readJobState(queue, id) {
+  const job = await queue.getJob(id);
+  if (!job) return null;
+
+  const status = await job.getState();
+  if (status === "completed") return { jobId: job.id, status, result: job.returnvalue };
+  if (status === "failed") return { jobId: job.id, status, error: job.failedReason };
+  return { jobId: job.id, status };
+}
+
+// ---------------------------------------------------------------- health ---
+
+app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
+
+// --------------------------------------------------------------- sources ---
+
+/** Metadata the upload UI needs before it lets the user pick a file. */
+app.get("/api/config", (_req, res) =>
+  res.json({
+    maxBytes: config.upload.maxBytes,
+    extensions: Object.keys(SUPPORTED_EXTENSIONS),
+  })
+);
+
+app.get("/api/sources", async (_req, res, next) => {
+  try {
+    res.json({ sources: await listSources() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete("/api/sources/:docId", async (req, res, next) => {
+  try {
+    const removed = await deleteSource(req.params.docId);
+    if (!removed) return res.status(404).json({ error: "Source not found" });
+    res.json({ deleted: req.params.docId });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------- indexing ---
+
+app.post("/api/index", upload.single("file"), async (req, res, next) => {
   if (!req.file) {
-    return res
-      .status(400)
-      .json({ error: "No PDF file uploaded (field: 'file')" });
+    return res.status(400).json({ error: "No file uploaded (field name: 'file')" });
   }
 
   try {
+    const docId = crypto.randomUUID();
     const job = await enqueueIndexingJob({
+      docId,
       filePath: req.file.path,
       originalName: req.file.originalname,
-      mimeType: req.file.mimetype,
       size: req.file.size,
     });
 
-    return res.status(202).json({
-      message: "File uploaded and queued for indexing",
+    res.status(202).json({
       jobId: job.id,
-      file: {
-        originalName: req.file.originalname,
-        storedAs: req.file.filename,
-        size: req.file.size,
-      },
+      docId,
+      file: { name: req.file.originalname, size: req.file.size },
     });
   } catch (err) {
-    console.error("Failed to enqueue indexing job:", err);
-    return res.status(500).json({ error: "Failed to queue file for indexing" });
+    await discardUpload(req.file?.path);
+    next(err);
   }
 });
 
-// --- POST /query : enqueue a RAG query job, return the job id to poll ---
-app.post("/query", async (req, res) => {
-  const query = req.body?.query;
-  if (typeof query !== "string" || query.trim().length === 0) {
+app.get("/api/index/:id", async (req, res, next) => {
+  try {
+    const state = await readJobState(indexingQueue, req.params.id);
+    if (!state) return res.status(404).json({ error: "Job not found" });
+    res.json(state);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ----------------------------------------------------------------- query ---
+
+app.post("/api/query", async (req, res, next) => {
+  const query = typeof req.body?.query === "string" ? req.body.query.trim() : "";
+  if (!query) {
+    return res.status(400).json({ error: "Body must include a non-empty 'query' string" });
+  }
+  if (query.length > config.query.maxChars) {
     return res
       .status(400)
-      .json({ error: "Body must include a non-empty 'query' string" });
+      .json({ error: `Query is too long (max ${config.query.maxChars} characters)` });
   }
 
   try {
-    const job = await enqueueQueryJob({ query: query.trim() });
-    return res.status(202).json({
-      message: "Query queued",
-      jobId: job.id,
-      poll: `/query/${job.id}`,
-    });
+    const job = await enqueueQueryJob({ query });
+    res.status(202).json({ jobId: job.id, poll: `/api/query/${job.id}` });
   } catch (err) {
-    console.error("Failed to enqueue query job:", err);
-    return res.status(500).json({ error: "Failed to queue query" });
+    next(err);
   }
 });
 
-// --- GET /query/:id : poll for the status/result of a query job ---
-app.get("/query/:id", async (req, res) => {
+app.get("/api/query/:id", async (req, res, next) => {
   try {
-    const job = await queryQueue.getJob(req.params.id);
-    if (!job) {
-      return res.status(404).json({ error: "Job not found" });
-    }
-
-    const state = await job.getState();
-
-    if (state === "completed") {
-      return res.json({
-        jobId: job.id,
-        status: state,
-        result: job.returnvalue,
-      });
-    }
-    if (state === "failed") {
-      return res
-        .status(200)
-        .json({ jobId: job.id, status: state, error: job.failedReason });
-    }
-
-    // waiting | active | delayed | paused
-    return res.json({ jobId: job.id, status: state });
+    const state = await readJobState(queryQueue, req.params.id);
+    if (!state) return res.status(404).json({ error: "Job not found" });
+    res.json(state);
   } catch (err) {
-    console.error("Failed to fetch query job:", err);
-    return res.status(500).json({ error: "Failed to fetch job" });
+    next(err);
   }
 });
 
-// Multer / route error handler.
-app.use((err, _req, res, _next) => {
-  console.error(err);
-  return res.status(400).json({ error: err.message });
+// ------------------------------------------------------- static frontend ---
+
+// Serve the built React app when it exists (npm run build in web/).
+// In development the Vite dev server proxies /api here instead.
+if (fs.existsSync(clientDist)) {
+  app.use(express.static(clientDist, { index: false, maxAge: "1h" }));
+  app.get(/^(?!\/api\/).*/, (_req, res) =>
+    res.sendFile(path.join(clientDist, "index.html"))
+  );
+} else {
+  app.get("/", (_req, res) =>
+    res
+      .status(200)
+      .type("text/plain")
+      .send("API is running. Build the UI with:  cd web && npm run build")
+  );
+}
+
+// ---------------------------------------------------------- error handler ---
+
+app.use((_req, res) => res.status(404).json({ error: "Not found" }));
+
+// eslint-disable-next-line no-unused-vars -- Express identifies handlers by arity.
+app.use((err, req, res, _next) => {
+  if (err instanceof multer.MulterError) {
+    const message =
+      err.code === "LIMIT_FILE_SIZE"
+        ? `File is too large (max ${Math.round(config.upload.maxBytes / 1024 / 1024)} MB)`
+        : err.field || err.message;
+    discardUpload(req.file?.path);
+    return res.status(400).json({ error: message });
+  }
+
+  console.error("Unhandled error:", err);
+  res.status(500).json({ error: "Internal server error" });
 });
 
-app.listen(config.port, () => {
-  console.log(`🚀 Server listening on http://localhost:${config.port}`);
+const server = app.listen(config.port, () => {
+  console.log(`🚀 API listening on http://localhost:${config.port}`);
+  if (!fs.existsSync(clientDist)) {
+    console.log("   UI not built yet — run the Vite dev server in web/");
+  }
 });
+
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    console.log(`\n${signal} received — closing server...`);
+    server.close(() => process.exit(0));
+  });
+}

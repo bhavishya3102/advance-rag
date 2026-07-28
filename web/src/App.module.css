@@ -1,0 +1,67 @@
+.shell {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.body {
+  display: grid;
+  grid-template-columns: var(--rail-width) 1fr;
+  min-height: 0;
+}
+
+.main {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  background: rgba(8, 6, 5, 0.62);
+  backdrop-filter: blur(2px);
+  animation: fade var(--fast) var(--ease);
+  cursor: default;
+  display: none;
+}
+
+/* --- below 60rem the rail becomes a slide-over drawer --- */
+
+@media (max-width: 60rem) {
+  .body {
+    grid-template-columns: 1fr;
+  }
+
+  .body > :first-child {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 20;
+    width: min(var(--rail-width), 88vw);
+    transform: translateX(-102%);
+    transition: transform var(--mid) var(--ease-out);
+    box-shadow: 2rem 0 4rem rgba(0, 0, 0, 0.5);
+  }
+
+  .railOpen {
+    transform: none !important;
+  }
+
+  .scrim {
+    display: block;
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

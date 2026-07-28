@@ -1,0 +1,230 @@
+/* ============================================================================
+   The Reading Room — design tokens
+   A warm, ink-on-paper editorial system: dark oak ground, aged-paper text,
+   a single lamplight amber accent. Serif for reading, mono for evidence.
+   ========================================================================= */
+
+:root {
+  /* --- ground: warm near-blacks, never blue-grey --- */
+  --ground: #14110e;
+  --ground-deep: #0d0b09;
+  --surface: #1b1713;
+  --surface-raised: #241e18;
+  --surface-sunken: #100e0b;
+
+  /* --- ink: aged paper, not white --- */
+  --ink: #ede4d3;
+  --ink-soft: #c4b8a3;
+  --ink-muted: #8d8272;
+  --ink-faint: #5e564b;
+
+  /* --- lamplight: the one sharp accent --- */
+  --amber: #e0a33e;
+  --amber-bright: #f2bb5c;
+  --amber-dim: #8a642a;
+  --amber-wash: rgba(224, 163, 62, 0.11);
+  --amber-edge: rgba(224, 163, 62, 0.32);
+
+  /* --- supporting hues, used sparingly --- */
+  --sage: #7f9b7a;
+  --oxblood: #b3543f;
+
+  /* --- rules & edges --- */
+  --rule: rgba(237, 228, 211, 0.09);
+  --rule-strong: rgba(237, 228, 211, 0.17);
+
+  /* --- type --- */
+  --font-display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --font-body: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", ui-monospace, monospace;
+
+  --step--2: 0.6875rem;
+  --step--1: 0.8125rem;
+  --step-0: 0.9375rem;
+  --step-1: 1.0625rem;
+  --step-2: 1.375rem;
+  --step-3: 1.875rem;
+  --step-4: 2.75rem;
+
+  /* --- space --- */
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.5rem;
+  --sp-6: 2rem;
+  --sp-7: 3rem;
+
+  /* --- motion --- */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --fast: 140ms;
+  --mid: 280ms;
+  --slow: 520ms;
+
+  --rail-width: 21rem;
+  --reading-width: 40rem;
+}
+
+/* ------------------------------------------------------------------ reset */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  min-height: 100dvh;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: var(--step-0);
+  font-optical-sizing: auto;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+input,
+button,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+ul,
+ol {
+  list-style: none;
+  padding: 0;
+}
+
+/* --------------------------------------------------------- atmosphere */
+
+/* Lamplight: a warm pool of light falling from the top of the page, plus a
+   fine grain so the dark ground reads as paper rather than flat pixels. */
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+body::before {
+  background:
+    radial-gradient(
+      120ch 60ch at 62% -18%,
+      rgba(224, 163, 62, 0.09),
+      transparent 62%
+    ),
+    radial-gradient(80ch 50ch at 4% 8%, rgba(224, 163, 62, 0.045), transparent 60%);
+}
+
+/* A whisper of grain so the dark ground reads as paper stock rather than a
+   flat fill. Anything stronger than this bands visibly on wide screens. */
+body::after {
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---------------------------------------------------------- typography */
+
+h1,
+h2,
+h3 {
+  font-weight: 400;
+  line-height: 1.15;
+  text-wrap: balance;
+}
+
+::selection {
+  background: var(--amber);
+  color: var(--ground-deep);
+}
+
+/* ------------------------------------------------------------- a11y */
+
+:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --------------------------------------------------------- scrollbars */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-faint) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--ink-faint);
+  border-radius: 99px;
+  border: 2px solid var(--ground);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-muted);
+}
+
+/* ------------------------------------------------------------- motion */
+
+/* NOTE ON @keyframes
+   The keyframes (rise / fade / draw / sweep / breathe) are declared inside each
+   *.module.css that uses them, NOT here. CSS Modules rewrite `animation-name`
+   to a module-scoped identifier, so a module referencing a keyframe defined in
+   this global sheet resolves to a name that does not exist — the animation then
+   silently never runs, and any rule whose resting state depends on it (an
+   element starting at opacity 0) stays invisible forever.
+   Keep each keyframe next to the rule that uses it. */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    /* Beats the inline animation-delay used for stagger, so staggered lists
+       appear at once instead of trickling in over several seconds. */
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
