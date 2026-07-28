@@ -1,6 +1,6 @@
 import { config } from "./config.js";
 import { qdrant } from "./qdrant.js";
-import { openai, embedText, embedTexts } from "./openai.js";
+import { openai, embedTexts } from "./openai.js";
 
 /**
  * Rewrite a user's query into several variants to improve retrieval:
@@ -185,39 +185,34 @@ export async function retrieveChunks(query) {
 }
 
 /**
- * RAG query pipeline: embed the query, search Qdrant for relevant chunks,
- * then ask the chat model to answer using only that retrieved context.
+ * RAG query pipeline: run the multi-query retrieval (rewriting + step-back +
+ * HyDE + sub-queries, fused with RRF), then ask the chat model to answer using
+ * only the retrieved context.
  * @param {string} query
  */
 export async function answerQuery(query) {
-  const collection = config.qdrant.collection;
+  // 1. Expand the query, search with every variant, fuse with RRF.
+  const { queries, chunks } = await retrieveChunks(query);
 
-  // 1. Embed the query.
-  const vector = await embedText(query);
-
-  // 2. Retrieve the most similar chunks from Qdrant.
-  const hits = await qdrant.search(collection, {
-    vector,
-    limit: config.retrieval.topK,
-    with_payload: true,
-  });
-
-  const sources = hits.map((h) => ({
-    text: h.payload?.text ?? "",
-    source: h.payload?.source ?? null,
-    chunkIndex: h.payload?.chunkIndex ?? null,
-    score: h.score,
+  const sources = chunks.map((c) => ({
+    text: c.text,
+    source: c.source,
+    chunkIndex: c.chunkIndex,
+    score: c.bestScore, // best raw vector similarity across the variants
+    rrfScore: c.rrfScore,
+    matchedBy: c.matchedBy, // which query variants surfaced this chunk
   }));
 
   if (sources.length === 0) {
     return {
       query,
+      queries,
       answer: "I couldn't find anything relevant in the indexed documents.",
       sources: [],
     };
   }
 
-  // 3. Build context and generate a grounded answer.
+  // 2. Build context and generate a grounded answer.
   const context = sources
     .map((s, i) => `[Chunk ${i + 1}] (source: ${s.source})\n${s.text}`)
     .join("\n\n");
@@ -241,5 +236,5 @@ export async function answerQuery(query) {
 
   const answer = completion.choices[0]?.message?.content?.trim() ?? "";
 
-  return { query, answer, sources };
+  return { query, queries, answer, sources };
 }
