@@ -5,6 +5,9 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { createBullBoard } from "@bull-board/api";
+import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
+import { ExpressAdapter } from "@bull-board/express";
 import { config } from "./config.js";
 import { SUPPORTED_EXTENSIONS } from "./indexer.js";
 import { listSources, deleteSource } from "./sources.js";
@@ -170,6 +173,22 @@ app.get("/api/query/:id", async (req, res, next) => {
   }
 });
 
+// ------------------------------------------------------ queue dashboard ---
+
+// Bull Board: inspect both queues, drill into a job's data / result / stack
+// trace, retry a failure, clean out old jobs.
+//
+// Mounted BEFORE the SPA catch-all below, which would otherwise swallow this
+// path and serve index.html instead. It has no authentication, so keep it off
+// a public port or put it behind a proxy.
+const bullBoard = new ExpressAdapter();
+bullBoard.setBasePath(config.queueDashboardPath);
+createBullBoard({
+  queues: [new BullMQAdapter(indexingQueue), new BullMQAdapter(queryQueue)],
+  serverAdapter: bullBoard,
+});
+app.use(config.queueDashboardPath, bullBoard.getRouter());
+
 // ------------------------------------------------------- static frontend ---
 
 // Serve the built React app when it exists (npm run build in web/).
@@ -209,6 +228,9 @@ app.use((err, req, res, _next) => {
 
 const server = app.listen(config.port, () => {
   console.log(`🚀 API listening on http://localhost:${config.port}`);
+  console.log(
+    `📊 Queues      http://localhost:${config.port}${config.queueDashboardPath}`
+  );
   if (!fs.existsSync(clientDist)) {
     console.log("   UI not built yet — run the Vite dev server in web/");
   }

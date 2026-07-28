@@ -273,6 +273,33 @@ any non-`/api` route.
 
 Stop the containers with `npm run services:down`.
 
+### Watching the queues
+
+Two dashboards, both read-only views onto what the pipeline is actually doing:
+
+| | URL | Shows |
+|---|---|---|
+| **Bull Board** | http://localhost:8000/admin/queues | Both BullMQ queues — job counts by state, and per job its `data`, `returnvalue`, failure reason + stack, timings, and retry/clean buttons |
+| **Qdrant** | http://localhost:6333/dashboard | The `documents` collection — point count, vector config, and the stored chunks with their payloads |
+
+Bull Board is the fastest way to answer "why didn't my PDF index?" — open the **Failed** tab and read
+the error. A common one is `No extractable text found`, which means the PDF is scanned/image-only
+and has no text layer for `pdf-parse` to read; that needs OCR, which this pipeline doesn't do.
+
+> ⚠️ Bull Board has **no authentication**. It exposes job payloads and lets anyone retry or delete
+> jobs. Fine on localhost; put it behind a proxy or drop the route before exposing this server.
+> The path is configurable with `QUEUE_DASHBOARD_PATH`.
+
+Same information from the terminal, if you prefer:
+
+```bash
+redis-cli LLEN  bull:file-indexing:wait        # queued
+redis-cli ZCARD bull:file-indexing:failed      # failures
+redis-cli ZRANGE bull:file-indexing:failed 0 -1        # their ids
+redis-cli HGET  bull:file-indexing:14 failedReason     # why one failed
+redis-cli XREVRANGE bull:query:events + - COUNT 10     # recent state changes
+```
+
 ### Using the UI
 
 - **Add a source** — drag files onto the left rail, or click it to browse. PDF, Markdown and plain
@@ -426,6 +453,7 @@ All values live in `.env`, read once in [src/config.js](src/config.js).
 | Variable | Default | Meaning |
 |---|---|---|
 | `PORT` | `8000` | Express port |
+| `QUEUE_DASHBOARD_PATH` | `/admin/queues` | Where Bull Board mounts. No auth — localhost only |
 | `REDIS_HOST` / `REDIS_PORT` | `127.0.0.1` / `6379` | BullMQ connection |
 | `QDRANT_URL` | `http://127.0.0.1:6333` | Qdrant REST endpoint |
 | `QDRANT_COLLECTION` | `documents` | Collection name |

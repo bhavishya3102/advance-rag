@@ -17,6 +17,8 @@
     "services:down": "docker compose down"
   },
   "dependencies": {
+    "@bull-board/api": "^8.3.2",
+    "@bull-board/express": "^8.3.2",
     "@qdrant/js-client-rest": "^1.13.0",
     "bullmq": "^5.34.0",
     "dotenv": "^16.4.7",

@@ -1,8 +1,20 @@
+
+
+# Qdrant UI--- to show vectore database tables -- chunks
+
+1. Dashboard (GUI)
+
+http://localhost:6333/dashboard
+Browser me kholo → Collections tab. Wahan documents dikhega, uspar click karke points browse kar sakte ho, payload (text, source, chunkIndex) dekh sakte ho, aur search bhi try kar sakte ho.
+
+
 # Pipeline Walkthrough — One Real Question, Every Stage
+
 
 This document follows **one actual run** of the pipeline from end to end. Every number, ranking and
 piece of text below was captured from a real execution against a live Qdrant and the real OpenAI
 API — nothing here is illustrative or made up. Reproduction steps are at the bottom.
+
 
 **The document indexed:** a 6-section fictional "Zephyrite Protocol Handbook" (~3,500 characters).
 Fictional on purpose — the model has no prior knowledge of Zephyrite, so any correct answer *must*
@@ -282,6 +294,31 @@ Consensus, not any single opinion, decides the order.
    5 chunks kept  ──►  4,519 characters of context
 ```
 
+### So which chunks actually reached the model?
+
+Reading it straight off the Stage 3 table: six lists × four hits = **24 hits**, but only **five
+distinct chunks** (c0, c1, c2, c3, c4). The same chunks keep reappearing across variants — that
+repetition *is* the signal RRF measures. After deduping and sorting by fused score the order is:
+
+```
+   c3  →  c2  →  c0  →  c1  →  c4
+ 0.0984  0.0968  0.0950  0.0781  0.0156
+```
+
+`RETRIEVAL_FINAL_K` is 5 and there were exactly 5 candidates, so **all five were kept**.
+
+**But look at how c4 got in.** Only `subQuery2` ever found it, at rank 4. Its fused score is
+**five times lower** than c1's (0.0156 vs 0.0781). It made the cut because there was nothing else
+competing for the fifth slot — not because it earned it.
+
+On a real corpus that changes completely. With 600 chunks in the index the six variants would surface
+perhaps 20 distinct candidates, and `slice(0, 5)` would drop c4 long before it reached the prompt.
+That is exactly RRF's job: keep a chunk that only one variant liked *below* the chunks several
+variants agreed on.
+
+You can see this in the UI — c4's row in the Retrieval Trace shows a single `subQuery2` chip and a
+visibly stubby bar, while the rows above it carry all six chips.
+
 ---
 
 ## Stage 5 — Generation
@@ -300,6 +337,42 @@ User:    Context:
 
          Question: why does zephyrite lose data when a node crashes and how do i fix it
 ```
+
+### Wait — isn't 4,519 characters the *entire document*?
+
+Yes, and that is worth being precise about, because it looks like retrieval achieved nothing.
+
+The pipeline sends **only the kept chunks** — never the source file. It just happens that this
+document contains exactly 5 chunks and `RETRIEVAL_FINAL_K` is exactly 5, so "the top 5" and "all of
+it" are the same set here. The number checks out to the character:
+
+```
+  chunk text     1000 + 998 + 996 + 998 + 304        = 4,296
+  5 × header     "[Chunk 1] (source: zephyrite-handbook.pdf)\n"
+                 43 chars each                       =   215
+  4 × separator  "\n\n"                              =     8
+                                                       ───────
+                                               total   = 4,519   ← the figure above
+```
+
+Nothing extra is smuggled in: the context is the five chunk bodies plus their labels.
+
+What the same code does on a document that isn't a toy:
+
+| | This test document | A 200-page PDF |
+|---|---|---|
+| Chunks in the index | 5 | ~600 |
+| Characters in the index | ~4,300 | ~600,000 |
+| Characters sent to the LLM | 4,519 | ~5,000 |
+| **Reduction** | **0%** | **~99%** |
+
+The prompt size is governed by `RETRIEVAL_FINAL_K`, not by the size of the corpus — five chunks cost
+the same whether the index holds 5 documents or 5,000. That is the whole economic point of
+retrieval: prompt cost stays flat while the knowledge base grows.
+
+If you want a smaller context, lower `RETRIEVAL_FINAL_K` in `.env`. Lower it too far and multi-part
+questions start losing one of their halves — this question needed both the crash-recovery chunk
+(c3) *and* the surrounding context to answer fully.
 
 **The answer produced:**
 
@@ -408,6 +481,34 @@ curl http://localhost:8000/api/query/1
 The `/api/query/:id` response carries the pipeline's own trace: `queries` shows all six variants that
 were searched, and each source's `matchedBy` lists which variants found it — the same data the
 tables above are built from.
+
+
+
+### Watching the queues
+
+Two dashboards, both read-only views onto what the pipeline is actually doing:
+
+| | URL | Shows |
+|---|---|---|
+| **Bull Board** | http://localhost:8000/admin/queues | Both BullMQ queues — job counts by state, and per job its `data`, `returnvalue`, failure reason + stack, timings, and retry/clean buttons |
+| **Qdrant** | http://localhost:6333/dashboard | The `documents` collection — point count, vector config, and the stored chunks with their payloads |
+
+Bull Board is the fastest way to answer "why didn't my PDF index?" — open the **Failed** tab and read
+the error. A common one is `No extractable text found`, which means the PDF is scanned/image-only
+and has no text layer for `pdf-parse` to read; that needs OCR, which this pipeline doesn't do.
+
+> ⚠️ Bull Board has **no authentication**. It exposes job payloads and lets anyone retry or delete
+> jobs. Fine on localhost; put it behind a proxy or drop the route before exposing this server.
+> The path is configurable with `QUEUE_DASHBOARD_PATH`.
+
+Same information from the terminal, if you prefer:
+
+```bash
+redis-cli LLEN  bull:file-indexing:wait        # queued
+redis-cli ZCARD bull:file-indexing:failed      # failures
+redis-cli ZRANGE bull:file-indexing:failed 0 -1        # their ids
+redis-cli HGET  bull:file-indexing:14 failedReason     # why one failed
+redis-cli XREVRANGE bull:query:events + - COUNT 10     # recent state changes
 
 **Reading the numbers in a response:**
 

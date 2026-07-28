@@ -21,6 +21,8 @@ export const config = {
     chunkSize: Number(process.env.CHUNK_SIZE) || 1000,
     chunkOverlap: Number(process.env.CHUNK_OVERLAP) || 200,
   },
+  // Where the Bull Board queue dashboard is mounted. No auth — don't expose it.
+  queueDashboardPath: process.env.QUEUE_DASHBOARD_PATH || "/admin/queues",
   upload: {
     maxBytes: Number(process.env.MAX_UPLOAD_BYTES) || 25 * 1024 * 1024, // 25 MB
   },
