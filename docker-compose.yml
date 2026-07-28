@@ -9,15 +9,9 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
-  redis:
-    image: redis:7-alpine
-    container_name: advance-rag-redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
+# Redis is NOT here on purpose: this machine already runs redis-server as a
+# system service on 6379, which the app connects to directly.
+#   sudo systemctl status redis-server
 
 volumes:
   qdrant_data:
-  redis_data:

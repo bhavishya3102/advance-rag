@@ -10,6 +10,10 @@ top chunks are handed to the LLM to write a grounded answer.
 Nothing blocks the HTTP request: heavy work (PDF parsing, embeddings, LLM calls) runs in a **separate
 worker process**, so the API stays fast and jobs can retry on failure.
 
+> 📘 **[PIPELINE-EXAMPLE.md](PIPELINE-EXAMPLE.md)** — one real question traced through every stage,
+> with the actual query variants, per-variant rankings, RRF arithmetic and timings from a live run.
+> Start there if you want to understand *how* it works rather than how to run it.
+
 ---
 
 ## Table of Contents
@@ -43,7 +47,7 @@ Three processes + two containers:
                                     │ add job
                                     ▼
                         ┌──────────────────────────────┐
-                        │   Redis  (BullMQ queues)      │   docker :6379
+                        │   Redis  (BullMQ queues)      │  native service :6379
                         │   • file-indexing             │
                         │   • query                     │
                         └───────────┬──────────────────┘
@@ -172,17 +176,23 @@ found it — very handy for debugging retrieval quality.
 | Requirement | Version | Note |
 |---|---|---|
 | Node.js | ≥ 18 (tested on v22) | ESM (`"type": "module"`) is used |
-| Docker + Docker Compose | any recent | Runs Qdrant + Redis |
+| Docker + Docker Compose | any recent | Runs Qdrant |
+| Redis | 6+ | Runs as a **native system service**, not in Docker — see below |
 | OpenAI API key | — | Used for embeddings **and** chat |
 
-> **Docker is not currently installed on this machine.** Install it first:
+> **Why is Redis not in `docker-compose.yml`?** This machine already runs
+> `redis-server` as a systemd service on port 6379, so a container would fail to bind that port
+> (`address already in use`). The app just connects to `127.0.0.1:6379` either way. Check it with:
 > ```bash
-> # Ubuntu / Debian
-> sudo apt update && sudo apt install -y docker.io docker-compose-v2
-> sudo systemctl enable --now docker
-> sudo usermod -aG docker $USER    # then log out and back in
+> systemctl status redis-server     # should be active
+> redis-cli ping                    # → PONG
 > ```
-> No Docker? See [Troubleshooting](#troubleshooting) for how to run Qdrant and Redis natively.
+> On a machine *without* native Redis, add the service back to `docker-compose.yml`:
+> ```yaml
+>   redis:
+>     image: redis:7-alpine
+>     ports: ["6379:6379"]
+> ```
 
 ---
 
@@ -208,9 +218,10 @@ cp .env.example .env
 You need **three things running**, in this order:
 
 ```bash
-# ── Terminal 1: infrastructure (Qdrant + Redis) ──
+# ── Terminal 1: infrastructure (Qdrant) ──
 npm run services:up          # docker compose up -d
 # Qdrant dashboard: http://localhost:6333/dashboard
+# Redis is already running as a system service — nothing to start.
 
 # ── Terminal 2: API server ──
 npm run dev                  # node --watch src/index.js
@@ -347,7 +358,7 @@ All values live in `.env`, read once in [src/config.js](src/config.js).
 
 ```
 advance-rag/
-├── docker-compose.yml    Qdrant (6333/6334) + Redis (6379), with named volumes
+├── docker-compose.yml    Qdrant only (6333/6334) — Redis runs natively on 6379
 ├── .env                  your secrets — git-ignored
 ├── .env.example          template to copy
 ├── uploads/              PDFs saved by multer — git-ignored, created at boot
@@ -368,8 +379,10 @@ advance-rag/
 
 | Symptom | Cause / fix |
 |---|---|
-| `ECONNREFUSED 127.0.0.1:6379` | Redis not running → `npm run services:up` |
-| `ECONNREFUSED 127.0.0.1:6333` | Qdrant not running → same |
+| `permission denied ... /var/run/docker.sock` | Your shell doesn't have the `docker` group yet. `getent group docker` shows you're a member but `id -nG` doesn't → group membership only loads at **login**. Fully quit and reopen your terminal/VS Code, or for a one-off: `sg docker -c "docker compose up -d"` |
+| `failed to bind host port 0.0.0.0:6379: address already in use` | Native `redis-server` already owns 6379. That's expected here — Redis was removed from `docker-compose.yml` on purpose |
+| `ECONNREFUSED 127.0.0.1:6379` | Native Redis is down → `sudo systemctl start redis-server` |
+| `ECONNREFUSED 127.0.0.1:6333` | Qdrant not running → `npm run services:up` |
 | `401 Incorrect API key provided` | `OPENAI_API_KEY` missing or still `sk-replace-me` in `.env` |
 | Job stays `waiting` forever | The worker process isn't running → `npm run worker` |
 | `Vector dimension error` on upsert | `EMBEDDING_DIMENSIONS` ≠ the collection's size → recreate the collection or use a new name |
@@ -377,11 +390,9 @@ advance-rag/
 | `chunks: 0, "No extractable text found"` | Scanned/image-only PDF — `pdf-parse` needs a text layer; you'd need OCR |
 | Answer is "I don't know" | Nothing indexed yet, or `RETRIEVAL_TOP_K` too small — check the Qdrant dashboard for point count |
 
-**No Docker?** Run the services natively instead:
-```bash
-sudo apt install -y redis-server && sudo systemctl enable --now redis-server
-# Qdrant: download a release binary from https://github.com/qdrant/qdrant/releases
-```
+**No Docker?** Qdrant can also run natively — download a release binary from
+[github.com/qdrant/qdrant/releases](https://github.com/qdrant/qdrant/releases). Redis already runs
+natively here (`sudo apt install -y redis-server` if it's ever missing).
 
 ---
 
